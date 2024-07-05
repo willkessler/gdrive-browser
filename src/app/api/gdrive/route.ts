@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth/next';
 import { NextRequest, NextResponse } from 'next/server';
 import { authOptions } from '@/lib/auth';
 import type { Session } from 'next-auth';
+import { PDFDocument } from 'pdf-lib';
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions) as Session | null;
@@ -20,21 +21,26 @@ export async function GET(req: NextRequest) {
   const fileId = searchParams.get('fileId');
   const folderId = searchParams.get('folderId');
 
-  try {
-    if (fileId) {
+  if (fileId) {
+    try {
       // Get file content
       const response = await drive.files.get({
         fileId: fileId,
         alt: 'media',
       }, { responseType: 'arraybuffer' });
 
-      return new NextResponse(response.data as ArrayBuffer, {
+      return new NextResponse(response.data, {
         status: 200,
         headers: {
-          'Content-Type': response.headers['content-type'] || 'application/octet-stream',
+          'Content-Type': 'application/pdf',
         },
       });
-    } else if (folderId) {
+    } catch (error) {
+      console.error('Error fetching file:', error);
+      return NextResponse.json({ error: 'Error fetching file' }, { status: 500 });
+    }
+  } else if (folderId) {
+    try {
       // List files in folder
       const response = await drive.files.list({
         q: `'${folderId}' in parents and mimeType='application/pdf'`,
@@ -42,7 +48,12 @@ export async function GET(req: NextRequest) {
       });
 
       return NextResponse.json(response.data.files);
-    } else {
+    } catch (error) {
+      console.error('Error:', error);
+      return NextResponse.json({ error: 'Error fetching data from Google Drive' }, { status: 500 });
+    }
+  } else {
+    try {
       // List folders
       const response = await drive.files.list({
         q: "mimeType='application/vnd.google-apps.folder'",
@@ -50,9 +61,9 @@ export async function GET(req: NextRequest) {
       });
 
       return NextResponse.json(response.data.files);
+    } catch (error) {
+      console.error('Error:', error);
+      return NextResponse.json({ error: 'Error fetching data from Google Drive' }, { status: 500 });
     }
-  } catch (error) {
-    console.error('Error:', error);
-    return NextResponse.json({ error: 'Error fetching data from Google Drive' }, { status: 500 });
   }
 }

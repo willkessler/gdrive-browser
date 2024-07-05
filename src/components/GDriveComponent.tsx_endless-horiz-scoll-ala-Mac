@@ -1,0 +1,312 @@
+// src/components/GDriveComponent.tsx
+'use client';
+
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useSession, signIn, signOut } from 'next-auth/react';
+import { Box, Text, Select, Button, Container, Grid, Alert, Anchor, ScrollArea, Loader } from '@mantine/core';
+import { createStyles, rem } from '@mantine/styles';
+import axios from 'axios';
+import Image from 'next/image';
+
+const useStyles = createStyles((theme) => ({
+  container: {
+    display: 'flex',
+    flexDirection: 'column',
+    height: '100vh',
+  },
+  header: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    padding: theme.spacing.sm,
+  },
+  signOutLink: {
+    textDecoration: 'none',
+    '&:hover': {
+      textDecoration: 'underline',
+    },
+  },
+  content: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+  },
+  fileList: {
+    width: '100%',
+    paddingRight: theme.spacing.md,
+  },
+  fileItem: {
+    cursor: 'pointer',
+    padding: rem(5),
+    border: `${rem(1)} solid ${theme.colors.gray[4]}`,
+    margin: `${rem(5)} 0`,
+    '&:hover': {
+      backgroundColor: theme.colors.orange[1],
+    },
+  },
+  previewArea: {
+    flex: 1,
+    overflow: 'hidden',
+  },
+  loader: {
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    height: rem(40),
+  },
+  tileContainer: {
+    display: 'flex',
+    alignItems: 'center',
+    height: '300px',
+    overflowX: 'auto',
+    padding: '0 50%',
+    scrollSnapType: 'x mandatory',
+  },
+  tile: {
+    width: '200px',
+    height: '200px',
+    flexShrink: 0,
+    marginRight: '20px',
+    scrollSnapAlign: 'center',
+    transition: 'all 0.3s ease',
+  },
+  activeTile: {
+    width: '300px',
+    height: '300px',
+  },
+  preview: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain',
+  },
+}));
+
+interface Folder {
+  id: string;
+  name: string;
+}
+
+interface File {
+  id: string;
+  name: string;
+  mimeType: string;
+}
+
+interface CachedPreview {
+  id: string;
+  previewUrl: string;
+}
+
+function useDebounce(callback: (...args: any[]) => void, delay: number) {
+  const [timer, setTimer] = useState<NodeJS.Timeout | null>(null);
+
+  const debouncedCallback = useCallback((...args: any[]) => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+    const newTimer = setTimeout(() => {
+      callback(...args);
+    }, delay);
+    setTimer(newTimer);
+  }, [callback, delay, timer]);
+
+  return debouncedCallback;
+}
+
+const FileTile: React.FC<{ file: File; isActive: boolean; onClick: () => void; cachedPreview: string | null }> = 
+  ({ file, isActive, onClick, cachedPreview }) => {
+  const { classes, cx } = useStyles();
+  const [previewError, setPreviewError] = useState(false);
+
+  const handlePreviewError = () => {
+    setPreviewError(true);
+  };
+
+  return (
+    <Box className={cx(classes.tile, { [classes.activeTile]: isActive })} onClick={onClick}>
+      {isActive ? (
+        <>
+          <Box style={{ position: 'relative', width: '100%', height: '80%' }}>
+            {!previewError ? (
+              <object
+                data={cachedPreview || `/api/gdrive?fileId=${file.id}`}
+                type="application/pdf"
+                width="100%"
+                height="100%"
+                onError={handlePreviewError}
+              >
+                <p>Unable to display PDF file. <a href={`/api/gdrive?fileId=${file.id}`} target="_blank" rel="noopener noreferrer">Download Instead</a></p>
+              </object>
+            ) : (
+              <Box style={{ width: '100%', height: '100%', backgroundColor: 'lightgray', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Text>Preview not available</Text>
+              </Box>
+            )}
+          </Box>
+          <Text ta="center" style={{ marginTop: '10px' }}>{file.name}</Text>
+        </>
+      ) : (
+        <Box style={{ width: '100%', height: '100%', backgroundColor: 'blue' }} />
+      )}
+    </Box>
+  );
+};
+
+export default function GDriveComponent() {
+  const HOVER_DELAY_MS = 300; // ms
+  const { classes } = useStyles();
+  const { data: session, status } = useSession();
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [isFoldersLoading, setIsFoldersLoading] = useState(true);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [cachedPreviews, setCachedPreviews] = useState<CachedPreview[]>([]);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const fetchFolders = async () => {
+    try {
+      setIsFoldersLoading(true);
+      const response = await axios.get<Folder[]>('/api/gdrive');
+      setFolders(response.data);
+      setError(null);
+    } catch (error) {
+      console.error('Error fetching folders:', error);
+      setError('Failed to fetch folders');
+    } finally {
+      setIsFoldersLoading(false);
+    }
+  };
+
+  const fetchFiles = async (folderId: string) => {
+    try {
+      const response = await axios.get<File[]>(`/api/gdrive?folderId=${folderId}`);
+      const sortedFiles = response.data.sort((a, b) => a.name.localeCompare(b.name));
+      setFiles(sortedFiles);
+      setActiveIndex(Math.floor(sortedFiles.length / 2));
+    } catch (error) {
+      console.error('Error fetching files:', error);
+      setError('Failed to fetch files');
+    }
+  };
+
+  useEffect(() => {
+    if (session) {
+      fetchFolders();
+    }
+  }, [session]);
+
+  useEffect(() => {
+    if (selectedFolder) {
+      fetchFiles(selectedFolder);
+    }
+  }, [selectedFolder]);
+
+  const cachePreview = useCallback(async (file: File) => {
+    if (!cachedPreviews.some(cp => cp.id === file.id)) {
+      try {
+        const response = await axios.get(`/api/gdrive?fileId=${file.id}`, { responseType: 'blob' });
+        const previewUrl = URL.createObjectURL(response.data);
+        setCachedPreviews(prev => [...prev, { id: file.id, previewUrl }]);
+      } catch (error) {
+        console.error('Error caching preview:', error);
+      }
+    }
+  }, [cachedPreviews]);
+
+  useEffect(() => {
+    if (files.length > 0 && activeIndex >= 0 && activeIndex < files.length) {
+      cachePreview(files[activeIndex]);
+    }
+  }, [files, activeIndex, cachePreview]);
+
+  const handleScroll = (event: React.WheelEvent) => {
+    if (containerRef.current) {
+      containerRef.current.scrollLeft += event.deltaY;
+      const newIndex = Math.round(containerRef.current.scrollLeft / 220);
+      setActiveIndex(newIndex);
+    }
+  };
+
+  const handleTileClick = (index: number) => {
+    if (index === activeIndex) {
+      window.open(`https://drive.google.com/file/d/${files[index].id}/view`, '_blank');
+    } else {
+      setActiveIndex(index);
+      if (containerRef.current) {
+        containerRef.current.scrollLeft = index * 220;
+      }
+    }
+  };
+
+  const debouncedHandleFileHover = useDebounce((file: File) => {
+    if (file.mimeType === 'application/pdf') {
+      setSelectedFile(file);
+      setPreviewUrl(`/api/gdrive?fileId=${file.id}`);
+    }
+  }, HOVER_DELAY_MS);
+
+  if (status === "loading") {
+    return <div>Loading...</div>;
+  }
+
+  if (!session) {
+    return (
+      <Container size="100%" px="xs">
+        <Text>Not signed in</Text>
+        <Button onClick={() => signIn('google')}>Sign in with Google</Button>
+      </Container>
+    );
+  }
+
+  return (
+    <div className={classes.container}>
+      <div className={classes.header}>
+        <Anchor onClick={() => signOut()} className={classes.signOutLink}>
+          Sign out
+        </Anchor>
+      </div>
+      {error && <Alert color="red">{error}</Alert>}
+      <div className={classes.content}>
+        <div className={classes.fileList}>
+          {isFoldersLoading ? (
+            <div className={classes.loader}>
+              <Loader />
+            </div>
+          ) : (
+            <Select
+              label="Select a folder"
+              placeholder="Choose a folder"
+              searchable
+              nothingFoundMessage="No folders found"
+              data={folders.map((folder) => ({ value: folder.id, label: folder.name }))}
+              value={selectedFolder}
+              onChange={setSelectedFolder}
+            />
+          )}
+          <ScrollArea>
+            <div className={classes.tileContainer} onWheel={handleScroll} ref={containerRef}>
+              {files.map((file, index) => (
+                <FileTile
+                  key={file.id}
+                  file={file}
+                  isActive={index === activeIndex}
+                  onClick={() => handleTileClick(index)}
+                  cachedPreview={cachedPreviews.find(cp => cp.id === file.id)?.previewUrl || null}
+                />
+              ))}
+            </div>
+          </ScrollArea>
+        </div>
+        <div className={classes.previewArea}>
+          {previewUrl && (
+            <iframe src={previewUrl} style={{ width: '100%', height: '100%', border: 'none' }} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
